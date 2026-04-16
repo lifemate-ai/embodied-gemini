@@ -1,0 +1,16 @@
+{
+  "hooks": {
+    "BeforeModel": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ./.gemini/hooks/user-prompt-submit-interoception.sh",
+            "timeout": 5000,
+            "statusMessage": "Injecting interoception"
+          }
+        ]
+      }
+    ]
+  }
+}
