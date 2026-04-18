@@ -17,7 +17,8 @@ from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import TextContent, Tool
 
-from desire_updater import compute_desires, save_desires
+import sqlite3
+from desire_updater import compute_desires, save_desires, DB_PATH
 
 # 欲求レベル読み込み元
 DESIRES_PATH = Path(os.getenv("DESIRES_PATH", str(Path.home() / ".gemini" / "desires.json")))
@@ -156,18 +157,14 @@ async def call_tool(name: str, arguments: dict[str, Any]) -> list[TextContent]:
 
     if name == "satisfy_desire":
         try:
-            import chromadb
-            chroma_path = os.getenv(
-                "MEMORY_DB_PATH",
-                str(Path.home() / ".gemini" / "memories" / "chroma"),
-            )
-            collection_name = os.getenv("MEMORY_COLLECTION_NAME", "gemini_memories")
-            client = chromadb.PersistentClient(path=chroma_path)
-            collection = client.get_or_create_collection(collection_name)
-            state = compute_desires(collection)
-            save_desires(state, DESIRES_PATH)
-            data = state.to_dict()
-            return [TextContent(type="text", text=format_desires(data))]
+            conn = sqlite3.connect(DB_PATH)
+            try:
+                state = compute_desires(conn)
+                save_desires(state, DESIRES_PATH)
+                data = state.to_dict()
+                return [TextContent(type="text", text=format_desires(data))]
+            finally:
+                conn.close()
         except Exception as e:
             return [TextContent(type="text", text=f"欲求レベルの更新に失敗: {e}")]
 

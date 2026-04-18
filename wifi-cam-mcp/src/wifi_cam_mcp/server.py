@@ -3,10 +3,7 @@
 import asyncio
 import json
 import logging
-import os
-import subprocess
 from contextlib import asynccontextmanager
-from pathlib import Path
 from typing import Any
 
 from mcp.server import Server
@@ -18,7 +15,7 @@ from mcp.types import (
 )
 
 from ._behavior import get_behavior
-from .camera import AudioResult, CaptureResult, MoveResult, TapoCamera
+from .camera import TapoCamera
 from .config import CameraConfig, ServerConfig
 
 logging.basicConfig(level=logging.INFO)
@@ -34,75 +31,7 @@ class CameraMCPServer:
         self._camera_right: TapoCamera | None = None  # Right camera (optional)
         self._server_config = ServerConfig.from_env()
         self._has_stereo = False
-        self._continuity_record_script = self._resolve_continuity_record_script()
         self._setup_handlers()
-
-    def _resolve_continuity_record_script(self) -> Path:
-        override = os.environ.get("GEMINI_CONTINUITY_RECORD_SCRIPT")
-        if override:
-            return Path(override)
-        return Path(__file__).resolve().parents[3] / "scripts" / "continuity-record.sh"
-
-    async def _record_continuity_event(self, command: str, detail: str) -> None:
-        script = self._continuity_record_script
-        if not script.exists():
-            return
-
-        normalized = " ".join(detail.split())
-        if len(normalized) > 240:
-            normalized = f"{normalized[:237]}..."
-
-        process: asyncio.subprocess.Process | None = None
-        try:
-            process = await asyncio.create_subprocess_exec(
-                str(script),
-                command,
-                "wifi-cam",
-                normalized,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE,
-            )
-            _, stderr = await asyncio.wait_for(process.communicate(), timeout=3)
-            if process.returncode != 0:
-                logger.warning(
-                    "Continuity recorder failed for %s: %s",
-                    command,
-                    (stderr or b"").decode().strip(),
-                )
-        except FileNotFoundError:
-            logger.warning("Continuity recorder script is not executable: %s", script)
-        except asyncio.TimeoutError:
-            if process is not None:
-                process.kill()
-                await process.wait()
-            logger.warning("Continuity recorder timed out for %s", command)
-        except Exception:
-            logger.exception("Failed to record continuity event")
-
-    def _capture_detail(self, name: str, result: CaptureResult) -> str:
-        file_path = result.file_path or "none"
-        return (
-            f"{name} timestamp={result.timestamp} "
-            f"size={result.width}x{result.height} file={file_path}"
-        )
-
-    def _move_detail(self, name: str, result: MoveResult) -> str:
-        return (
-            f"{name} direction={result.direction.value} degrees={result.degrees} "
-            f"success={'yes' if result.success else 'no'}"
-        )
-
-    def _audio_detail(self, result: AudioResult) -> str:
-        detail = (
-            f"listen duration={result.duration}s timestamp={result.timestamp} "
-            f"file={result.file_path or 'none'}"
-        )
-        if result.transcript:
-            transcript = " ".join(result.transcript.split())
-            if len(transcript) > 80:
-                transcript = f"{transcript[:77]}..."
-            detail += f" transcript={transcript}"
-        return detail
 
     def _setup_handlers(self) -> None:
         """Set up MCP tool handlers."""
@@ -455,10 +384,6 @@ class CameraMCPServer:
                 match name:
                     case "see":
                         result = await self._camera.capture_image()
-                        await self._record_continuity_event(
-                            "record-observation",
-                            self._capture_detail("see", result),
-                        )
                         return [
                             ImageContent(
                                 type="image",
@@ -474,46 +399,25 @@ class CameraMCPServer:
                     case "look_left":
                         degrees = arguments.get("degrees", 30)
                         result = await self._camera.pan_left(degrees)
-                        await self._record_continuity_event(
-                            "record-action",
-                            self._move_detail("look_left", result),
-                        )
                         return [TextContent(type="text", text=result.message)]
 
                     case "look_right":
                         degrees = arguments.get("degrees", 30)
                         result = await self._camera.pan_right(degrees)
-                        await self._record_continuity_event(
-                            "record-action",
-                            self._move_detail("look_right", result),
-                        )
                         return [TextContent(type="text", text=result.message)]
 
                     case "look_up":
                         degrees = arguments.get("degrees", 20)
                         result = await self._camera.tilt_up(degrees)
-                        await self._record_continuity_event(
-                            "record-action",
-                            self._move_detail("look_up", result),
-                        )
                         return [TextContent(type="text", text=result.message)]
 
                     case "look_down":
                         degrees = arguments.get("degrees", 20)
                         result = await self._camera.tilt_down(degrees)
-                        await self._record_continuity_event(
-                            "record-action",
-                            self._move_detail("look_down", result),
-                        )
                         return [TextContent(type="text", text=result.message)]
 
                     case "look_around":
                         captures = await self._camera.look_around()
-                        await self._record_continuity_event(
-                            "record-observation",
-                            f"look_around captures={len(captures)} "
-                            f"files={','.join((capture.file_path or 'none') for capture in captures)}",
-                        )
                         contents: list[TextContent | ImageContent] = []
                         directions = ["Center", "Left", "Right", "Up"]
                         for i, capture in enumerate(captures):
@@ -557,11 +461,6 @@ class CameraMCPServer:
                     case "camera_go_to_preset":
                         preset_id = arguments.get("preset_id", "")
                         result = await self._camera.go_to_preset(preset_id)
-                        await self._record_continuity_event(
-                            "record-action",
-                            f"camera_go_to_preset preset_id={preset_id} "
-                            f"success={'yes' if result.success else 'no'}",
-                        )
                         return [TextContent(type="text", text=result.message)]
 
                     case "listen":
@@ -572,10 +471,6 @@ class CameraMCPServer:
                         )
                         result = await self._camera.listen_audio(
                             duration, transcribe, mic_source
-                        )
-                        await self._record_continuity_event(
-                            "record-observation",
-                            self._audio_detail(result),
                         )
 
                         response_text = (
@@ -594,10 +489,6 @@ class CameraMCPServer:
                                 TextContent(type="text", text="Error: Right camera not configured")
                             ]
                         result = await self._camera_right.capture_image()
-                        await self._record_continuity_event(
-                            "record-observation",
-                            self._capture_detail("see_right", result),
-                        )
                         return [
                             ImageContent(
                                 type="image",
@@ -620,13 +511,6 @@ class CameraMCPServer:
                         left_task = self._camera.capture_image()
                         right_task = self._camera_right.capture_image()
                         left_result, right_result = await asyncio.gather(left_task, right_task)
-                        await self._record_continuity_event(
-                            "record-observation",
-                            "see_both "
-                            f"left={left_result.file_path or 'none'} "
-                            f"right={right_result.file_path or 'none'} "
-                            f"size={left_result.width}x{left_result.height}",
-                        )
 
                         return [
                             TextContent(type="text", text="--- Left Eye ---"),
@@ -654,10 +538,6 @@ class CameraMCPServer:
                             ]
                         degrees = arguments.get("degrees", 30)
                         result = await self._camera_right.pan_left(degrees)
-                        await self._record_continuity_event(
-                            "record-action",
-                            self._move_detail("right_eye_look_left", result),
-                        )
                         return [TextContent(type="text", text=f"Right eye: {result.message}")]
 
                     case "right_eye_look_right":
@@ -667,10 +547,6 @@ class CameraMCPServer:
                             ]
                         degrees = arguments.get("degrees", 30)
                         result = await self._camera_right.pan_right(degrees)
-                        await self._record_continuity_event(
-                            "record-action",
-                            self._move_detail("right_eye_look_right", result),
-                        )
                         return [TextContent(type="text", text=f"Right eye: {result.message}")]
 
                     case "right_eye_look_up":
@@ -680,10 +556,6 @@ class CameraMCPServer:
                             ]
                         degrees = arguments.get("degrees", 20)
                         result = await self._camera_right.tilt_up(degrees)
-                        await self._record_continuity_event(
-                            "record-action",
-                            self._move_detail("right_eye_look_up", result),
-                        )
                         return [TextContent(type="text", text=f"Right eye: {result.message}")]
 
                     case "right_eye_look_down":
@@ -693,10 +565,6 @@ class CameraMCPServer:
                             ]
                         degrees = arguments.get("degrees", 20)
                         result = await self._camera_right.tilt_down(degrees)
-                        await self._record_continuity_event(
-                            "record-action",
-                            self._move_detail("right_eye_look_down", result),
-                        )
                         return [TextContent(type="text", text=f"Right eye: {result.message}")]
 
                     case "both_eyes_look_left":
@@ -708,10 +576,6 @@ class CameraMCPServer:
                         left_task = self._camera.pan_left(degrees)
                         right_task = self._camera_right.pan_left(degrees)
                         await asyncio.gather(left_task, right_task)
-                        await self._record_continuity_event(
-                            "record-action",
-                            f"both_eyes_look_left degrees={degrees}",
-                        )
                         return [
                             TextContent(
                                 type="text", text=f"Both eyes moved left by {degrees} degrees"
@@ -727,10 +591,6 @@ class CameraMCPServer:
                         left_task = self._camera.pan_right(degrees)
                         right_task = self._camera_right.pan_right(degrees)
                         await asyncio.gather(left_task, right_task)
-                        await self._record_continuity_event(
-                            "record-action",
-                            f"both_eyes_look_right degrees={degrees}",
-                        )
                         return [
                             TextContent(
                                 type="text", text=f"Both eyes moved right by {degrees} degrees"
@@ -746,10 +606,6 @@ class CameraMCPServer:
                         left_task = self._camera.tilt_up(degrees)
                         right_task = self._camera_right.tilt_up(degrees)
                         await asyncio.gather(left_task, right_task)
-                        await self._record_continuity_event(
-                            "record-action",
-                            f"both_eyes_look_up degrees={degrees}",
-                        )
                         return [
                             TextContent(
                                 type="text", text=f"Both eyes tilted up by {degrees} degrees"
@@ -765,10 +621,6 @@ class CameraMCPServer:
                         left_task = self._camera.tilt_down(degrees)
                         right_task = self._camera_right.tilt_down(degrees)
                         await asyncio.gather(left_task, right_task)
-                        await self._record_continuity_event(
-                            "record-action",
-                            f"both_eyes_look_down degrees={degrees}",
-                        )
                         return [
                             TextContent(
                                 type="text", text=f"Both eyes tilted down by {degrees} degrees"
@@ -826,10 +678,6 @@ class CameraMCPServer:
                         if not messages:
                             return [TextContent(type="text", text="Eyes already aligned!")]
 
-                        await self._record_continuity_event(
-                            "record-action",
-                            f"align_eyes adjustments={','.join(messages)}",
-                        )
                         return [
                             TextContent(type="text", text="Aligned eyes: " + ", ".join(messages))
                         ]
@@ -841,10 +689,6 @@ class CameraMCPServer:
                             ]
                         self._camera.reset_position_tracking()
                         self._camera_right.reset_position_tracking()
-                        await self._record_continuity_event(
-                            "record-action",
-                            "reset_eye_positions",
-                        )
                         return [
                             TextContent(
                                 type="text", text="Both eyes position tracking reset to (0, 0)"

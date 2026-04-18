@@ -80,9 +80,9 @@ uv sync
 uv run wifi-cam-mcp
 ```
 
-## Gemini Desktopで使う
+## Claude Desktopで使う
 
-`gemini_desktop_config.json`  または適切な設定ファイルに追加：
+`claude_desktop_config.json`  または適切な設定ファイルに追加：
 
 ### Python版
 
@@ -107,7 +107,7 @@ uv run wifi-cam-mcp
 }
 ```
 
-## Gemini CLIで使う
+## Claude Codeで使う
 
 `.mcp.json` をプロジェクトルートまたはホームディレクトリに作成：
 
@@ -136,7 +136,7 @@ uv run wifi-cam-mcp
 
 ## 使用例
 
-Geminiに話しかける：
+Claudeに話しかける：
 
 - 「今カメラに何が映ってる？」
 - 「ちょっと左を見て」
